@@ -30,15 +30,19 @@ typical ball and round:
 balls_in_blob = round(blob_area / one_ball_area)   # at least 1
 ```
 
-"One ball's area" is measured from the frame itself: the median area among the
-clean, round blobs. If nothing round is visible, we fall back to a configured
-ball size. This is what lets a clump read as "3 balls" instead of "1 big thing".
+There are two ways to count, chosen by `Config.COUNT_METHOD`:
 
-> **Known limitation:** this area ÷ area method over-counts a *line* of touching
-> balls when the fallback ball size is off (a pure line has no clean single ball
-> to measure from). The fix — distance-transform peak counting, which uses the
-> fact that all balls are the same size — is designed in
-> [`BALL_COUNT_PLAN.md`](BALL_COUNT_PLAN.md).
+- **`"peaks"` (default):** run a distance transform on the mask — each pixel gets
+  its distance to the nearest background pixel. Because all balls are the same
+  size, this has **one local maximum per ball**, each peaking at about the ball's
+  pixel radius. We find those peaks (non-max suppressed a ball-width apart) and
+  count them. This counts a line, an L, or a 2-D pile correctly, and reads the
+  ball radius straight off the peaks so no fixed fallback is needed. An area
+  clamp rejects noise. See `find_ball_peaks` and `docs/BALL_COUNT_PLAN.md`.
+- **`"area"`:** the simpler method — blob area ÷ one ball's area. "One ball's
+  area" is the median area among clean, round blobs, falling back to a configured
+  size. It over-counts a line of touching balls when that fallback is off, which
+  is exactly why `"peaks"` is the default.
 
 ### 4. Group into clusters  (`cluster_detections`)
 Balls that are close together belong to the same pile. We link two detections
@@ -57,6 +61,13 @@ radius (how big the pile looks), a distance, and a score. Clusters are sorted
 distance), and if distance is unknown/uncalibrated it falls back to the tighter
 (smaller) radius. So a 4-ball pile always outranks a 2-ball pile, but two
 3-ball piles are ordered nearest-first.
+
+Before ranking, clusters are **smoothed across frames** (`ClusterTracker`, when
+`Config.SMOOTHING_ENABLED`): each cluster is matched to the previous frame's by
+nearest center and its position/count/distance are exponentially averaged, so
+the robot aims at a calm target instead of a value that jitters frame to frame.
+A cluster that leaves view is dropped after a few missed frames rather than
+lingering.
 
 ### 6. Send it to the robot  (`encode_llpython`, `best_cluster_contour`)
 - The ranked clusters are packed into the 32-double `llpython` array (schema at

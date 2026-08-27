@@ -79,8 +79,10 @@ All tunables live in the `Config` class at the top of
 | `CAMERA_FOCAL_PX` | Focal length in px for distance estimation; `0` = not calibrated (distance reported as unknown). See [`docs/DISTANCE.md`](docs/DISTANCE.md). |
 | `MIN_AREA_PX` / `MAX_AREA_PX` | Reject specks and giant background blobs. |
 | `MIN_CIRCULARITY` | How round a blob must be to count as ball(s). |
-| `FALLBACK_SINGLE_BALL_RADIUS_PX` | On-screen size of one ball, used when no clean reference ball is visible. |
+| `COUNT_METHOD` | `"peaks"` (distance-transform peak count, counts lines/piles correctly) or `"area"` (simpler area ratio). |
+| `FALLBACK_SINGLE_BALL_RADIUS_PX` | On-screen size of one ball, used by the `"area"` method / as a peak-count fallback. |
 | `CLUSTER_LINK_FACTOR` | How close balls must be to join one cluster. |
+| `SMOOTHING_ENABLED` / `SMOOTHING_ALPHA` | Steady clusters across frames; lower alpha = smoother, laggier. |
 | `MAX_CLUSTERS_REPORTED` | How many clusters to send to the robot (max 4). |
 
 ## Adapting to a different ball / game

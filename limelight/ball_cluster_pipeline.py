@@ -95,11 +95,34 @@ class Config:
     # detection distance.
     FALLBACK_SINGLE_BALL_RADIUS_PX = 22
 
+    # ---- Ball-count method ---------------------------------------------------
+    # "peaks" uses a distance-transform peak count (one peak per same-size ball)
+    # so a line/pile of touching balls counts correctly instead of over-counting
+    # from area alone. "area" is the older area/single-ball method. See
+    # docs/BALL_COUNT_PLAN.md.
+    COUNT_METHOD = "peaks"            # "peaks" | "area"
+    PEAK_MIN_DISTANCE_FACTOR = 0.9    # min spacing between peaks, x ball radius R
+    PEAK_DT_THRESHOLD_FACTOR = 0.5    # ignore distance-transform maxima below x R
+    COUNT_AREA_CLAMP_LOW = 0.6        # reject peak counts below this x area count
+    COUNT_AREA_CLAMP_HIGH = 1.4       # ...or above this x area count
+    MIN_BALL_RADIUS_FOR_PEAKS_PX = 10  # below this, balls too small -> use area
+
     # ---- Clustering ----------------------------------------------------------
     # Two balls join the same cluster when the gap between their centers is
     # within this factor times the sum of their radii. 2.0 means "centers
     # within ~2 ball-widths link up". Bigger = looser groups.
     CLUSTER_LINK_FACTOR = 2.0
+
+    # ---- Temporal smoothing --------------------------------------------------
+    # Steady the reported clusters across frames so the robot gets a calmer
+    # target. Clusters are matched to the previous frame by nearest center and
+    # exponentially smoothed. Set SMOOTHING_ENABLED = False to report raw
+    # per-frame clusters.
+    SMOOTHING_ENABLED = True
+    SMOOTHING_ALPHA = 0.5            # weight on the new frame; 1.0 = no smoothing
+    SMOOTHING_MATCH_FACTOR = 1.5     # match a cluster to a prior one within this
+    #                                  x its radius
+    SMOOTHING_MAX_MISSES = 3         # forget a track after this many missed frames
 
     # ---- Output --------------------------------------------------------------
     # 4 clusters * 6 fields + 3 header = 27 doubles, within the 32 llpython cap.
@@ -203,6 +226,116 @@ def reference_single_ball_area(detections, fallback_radius):
     return float(math.pi * fallback_radius * fallback_radius)
 
 
+def _median(values):
+    """Median of a list of numbers (empty -> 0.0)."""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    n = len(s)
+    if n % 2:
+        return float(s[n // 2])
+    return (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
+def local_maxima(dt, min_value):
+    """Pixels of a distance-transform array that are >= all 8 neighbors.
+
+    `dt` is a 2D numpy array (the mask's distance transform: each pixel holds
+    its distance to the nearest background pixel). Returns a list of
+    (row, col, value) for candidate ball centers with value >= min_value.
+    Adjacent plateau pixels can all qualify -- non-max suppression collapses
+    them later.
+    """
+    a = np.asarray(dt, dtype=float)
+    if a.ndim != 2 or a.size == 0:
+        return []
+    h, w = a.shape
+    padded = np.pad(a, 1, mode="constant", constant_values=-np.inf)
+    ge = np.ones((h, w), dtype=bool)
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            neigh = padded[1 + dr:h + 1 + dr, 1 + dc:w + 1 + dc]
+            ge &= a >= neigh
+    ge &= a >= min_value
+    rows, cols = np.nonzero(ge)
+    return [(int(r), int(c), float(a[r, c])) for r, c in zip(rows, cols)]
+
+
+def nms_peaks(peaks, min_distance):
+    """Greedy non-max suppression: keep the strongest peaks >= min_distance apart.
+
+    `peaks` is a list of (row, col, value). Returns the kept peaks, strongest
+    first. Collapses plateaus and merges near-duplicate maxima so each ball
+    contributes one peak.
+    """
+    kept = []
+    for r, c, v in sorted(peaks, key=lambda p: -p[2]):
+        if all(math.hypot(r - kr, c - kc) >= min_distance
+               for kr, kc, _ in kept):
+            kept.append((r, c, v))
+    return kept
+
+
+def find_ball_peaks(dt, min_distance_factor, dt_threshold_factor,
+                    fallback_radius, min_radius_px):
+    """Distance transform -> (peaks, estimated ball radius R).
+
+    One peak per same-size ball. R is read off the peaks themselves (each
+    peaks at ~ the ball radius), so no fixed single-ball size is assumed.
+    Returns (peaks, R) where peaks is a list of (row, col, value); R falls back
+    to `fallback_radius` when nothing is found. If R is below `min_radius_px`
+    the balls are too small to count reliably by peaks (caller should use area).
+    """
+    a = np.asarray(dt, dtype=float)
+    # First pass: rough radius from all local maxima above a low floor.
+    rough = local_maxima(a, min_value=max(1.0, 0.3 * fallback_radius))
+    r0 = _median([v for _, _, v in rough]) if rough else float(fallback_radius)
+    if r0 <= 0:
+        r0 = float(fallback_radius)
+    # Second pass: keep strong maxima, then space them a ball-width apart.
+    threshold = dt_threshold_factor * r0
+    strong = [p for p in rough if p[2] >= threshold]
+    peaks = nms_peaks(strong, min_distance_factor * r0)
+    radius = _median([v for _, _, v in peaks]) if peaks else r0
+    return peaks, float(radius)
+
+
+def assign_peaks_to_detections(detections, peaks):
+    """Count how many peaks (ball centers) fall inside each detection's circle.
+
+    Returns a list of counts aligned with `detections`. A peak is assigned to
+    the nearest detection whose enclosing circle contains it. Peaks are
+    (row, col, value) = (y, x, .); detection centers are (cx, cy) = (x, y).
+    """
+    counts = [0] * len(detections)
+    for pr, pc, _ in peaks:
+        best_i, best_d = None, None
+        for i, d in enumerate(detections):
+            dist = math.hypot(pc - d["cx"], pr - d["cy"])
+            if dist <= d["r"] * 1.1 and (best_d is None or dist < best_d):
+                best_i, best_d = i, dist
+        if best_i is not None:
+            counts[best_i] += 1
+    return counts
+
+
+def clamp_count_to_area(peak_count, area, ball_area, low, high):
+    """Keep a peak count within a sane multiple of the area-based count.
+
+    Guards against noise: if peaks disagree wildly with what the blob area
+    could hold, fall back toward the area estimate. Always at least 1 for a
+    real blob.
+    """
+    if ball_area <= 0:
+        return max(1, peak_count)
+    area_count = area / ball_area
+    lo = max(1, int(round(low * area_count)))
+    hi = max(1, int(round(high * area_count)))
+    return min(max(max(1, peak_count), lo), hi)
+
+
 def cluster_detections(detections, link_factor):
     """Group detections whose circles are close together (union-find).
 
@@ -288,6 +421,84 @@ def rank_clusters(summaries):
     return sorted(summaries, key=key)
 
 
+class ClusterTracker:
+    """Smooths cluster summaries across frames for a steadier target.
+
+    Each frame, incoming cluster summaries are matched to the previous frame's
+    tracks by nearest center (within SMOOTHING_MATCH_FACTOR x radius) and
+    exponentially smoothed: value = alpha*new + (1-alpha)*previous. Unmatched
+    tracks age out after `max_misses` frames; unmatched summaries start new
+    tracks. Only clusters seen in the current frame are returned, so a pile
+    that leaves view is dropped rather than hallucinated.
+
+    Pure Python (no OpenCV/numpy) so it is unit-testable off the robot.
+    """
+
+    _SMOOTHED = ("cx", "cy", "radius", "distance", "score", "est")
+
+    def __init__(self, alpha, match_factor, max_misses):
+        self.alpha = alpha
+        self.match_factor = match_factor
+        self.max_misses = max_misses
+        self._tracks = []          # each: {..fields.., "misses": int}
+
+    def _blend(self, prev, new, field):
+        # Distance blends only when both are known (>0); otherwise take whichever
+        # is known so an uncalibrated 0 never drags a real distance down.
+        pv, nv = prev.get(field, 0.0), new.get(field, 0.0)
+        if field == "distance":
+            if nv <= 0:
+                return pv
+            if pv <= 0:
+                return nv
+        return self.alpha * nv + (1.0 - self.alpha) * pv
+
+    def update(self, summaries):
+        """Return smoothed summaries for this frame (best-effort field copy)."""
+        used = [False] * len(self._tracks)
+        results = []
+        for s in summaries:
+            # find the closest unused track within the match radius
+            best_i, best_d = None, None
+            for i, t in enumerate(self._tracks):
+                if used[i]:
+                    continue
+                d = math.hypot(s["cx"] - t["cx"], s["cy"] - t["cy"])
+                reach = self.match_factor * max(s.get("radius", 0.0),
+                                                t.get("radius", 0.0))
+                if d <= reach and (best_d is None or d < best_d):
+                    best_i, best_d = i, d
+            if best_i is None:
+                track = dict(s)                    # new track: adopt as-is
+            else:
+                used[best_i] = True
+                prev = self._tracks[best_i]
+                track = dict(s)
+                for f in self._SMOOTHED:
+                    track[f] = self._blend(prev, s, f)
+            track["misses"] = 0
+            results.append(track)
+
+        # age unmatched tracks; keep the still-live ones for future matching
+        survivors = list(results)
+        for i, t in enumerate(self._tracks):
+            if not used[i]:
+                t["misses"] = t.get("misses", 0) + 1
+                if t["misses"] <= self.max_misses:
+                    survivors.append(t)
+        self._tracks = survivors
+
+        # hand back this frame's clusters with integer est / matching score
+        out = []
+        for t in results:
+            c = dict(t)
+            c.pop("misses", None)
+            c["est"] = max(1, int(round(t["est"])))
+            c["score"] = float(c["est"])
+            out.append(c)
+        return out
+
+
 def encode_llpython(summaries, total_balls, width, height, max_clusters):
     """Pack ranked cluster summaries into the fixed 32-double llpython array."""
     out = [0.0] * LLPYTHON_SIZE
@@ -362,6 +573,22 @@ def detect_blobs(mask):
     return detections
 
 
+def distance_transform_peaks(mask, fallback_radius):
+    """cv2: distance-transform a binary mask and return (peaks, ball radius R).
+
+    One peak per same-size ball. Only the distance transform needs OpenCV; the
+    peak finding (find_ball_peaks) is pure numpy and unit-tested off-device.
+    """
+    dt = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    return find_ball_peaks(
+        dt,
+        Config.PEAK_MIN_DISTANCE_FACTOR,
+        Config.PEAK_DT_THRESHOLD_FACTOR,
+        fallback_radius,
+        Config.MIN_BALL_RADIUS_FOR_PEAKS_PX,
+    )
+
+
 def draw_overlays(image, detections, ranked, width, height):
     """Draw detections + ranked clusters onto the frame for the dashboard."""
     # Rank colors: best cluster green, then yellow, orange, red-ish, gray.
@@ -414,6 +641,14 @@ def best_cluster_contour(ranked, detections_by_index):
 # -----------------------------------------------------------------------------
 #  ENTRY POINT  --  Limelight calls this once per frame.
 # -----------------------------------------------------------------------------
+# Module-level tracker persists between frames (the script stays loaded), which
+# is what makes cross-frame smoothing possible.
+_TRACKER = ClusterTracker(
+    Config.SMOOTHING_ALPHA, Config.SMOOTHING_MATCH_FACTOR,
+    Config.SMOOTHING_MAX_MISSES,
+)
+
+
 def runPipeline(image, llrobot):
     """image: BGR numpy frame. llrobot: doubles sent from the robot.
 
@@ -424,17 +659,35 @@ def runPipeline(image, llrobot):
     mask = threshold_color(image)
     detections = detect_blobs(mask)
 
-    # Estimate ball count per blob using this frame's reference ball size.
+    # Count balls per blob. Preferred method is distance-transform peak counting
+    # (one peak per same-size ball), which counts a line/pile correctly instead
+    # of over-counting from area. Falls back to the area method when peaks are
+    # disabled or the balls are too small on screen to peak-count reliably.
     single_area = reference_single_ball_area(
         detections, Config.FALLBACK_SINGLE_BALL_RADIUS_PX
     )
-    for d in detections:
-        d["est"] = estimate_ball_count(d["area"], single_area)
+    peak_counts = None
+    if Config.COUNT_METHOD == "peaks" and detections:
+        peaks, ball_radius_px = distance_transform_peaks(
+            mask, Config.FALLBACK_SINGLE_BALL_RADIUS_PX
+        )
+        if ball_radius_px >= Config.MIN_BALL_RADIUS_FOR_PEAKS_PX:
+            peak_counts = assign_peaks_to_detections(detections, peaks)
+            peak_ball_area = math.pi * ball_radius_px * ball_radius_px
+
+    for i, d in enumerate(detections):
+        if peak_counts is not None:
+            d["est"] = clamp_count_to_area(
+                peak_counts[i], d["area"], peak_ball_area,
+                Config.COUNT_AREA_CLAMP_LOW, Config.COUNT_AREA_CLAMP_HIGH
+            )
+        else:
+            d["est"] = estimate_ball_count(d["area"], single_area)
         d["distance"] = estimate_distance_in(
             2.0 * d["r"], Config.CAMERA_FOCAL_PX, Config.BALL_DIAMETER_IN
         )
 
-    # Cluster, summarize, rank.
+    # Cluster and summarize.
     groups = cluster_detections(detections, Config.CLUSTER_LINK_FACTOR)
     summaries = []
     for g in groups:
@@ -445,6 +698,10 @@ def runPipeline(image, llrobot):
             np.vstack([m["contour"] for m in members]) if members else None
         )
         summaries.append(s)
+
+    # Steady the clusters across frames, then rank.
+    if Config.SMOOTHING_ENABLED:
+        summaries = _TRACKER.update(summaries)
     ranked = rank_clusters(summaries)
 
     total_balls = int(sum(d["est"] for d in detections))

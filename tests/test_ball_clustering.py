@@ -208,6 +208,117 @@ def test_encode_respects_max_clusters():
     assert out[2] == 4.0                      # capped at 4
 
 
+def _cone_dt(shape, centers, radius):
+    """Synthesize a distance-transform-like array: a cone of height `radius` at
+    each ball center (max where cones overlap). This mimics the distance
+    transform of a group of same-size circles well enough to test peak counting
+    without OpenCV. `centers` are (x, y)."""
+    import numpy as np
+    ys, xs = np.mgrid[0:shape[0], 0:shape[1]]
+    dt = np.zeros(shape, dtype=float)
+    for cx, cy in centers:
+        cone = radius - np.hypot(xs - cx, ys - cy)
+        dt = np.maximum(dt, np.clip(cone, 0, None))
+    return dt
+
+
+def test_local_maxima_finds_the_apex():
+    import numpy as np
+    a = np.array([[0, 0, 0, 0, 0],
+                  [0, 1, 2, 1, 0],
+                  [0, 2, 5, 2, 0],
+                  [0, 1, 2, 1, 0],
+                  [0, 0, 0, 0, 0]], dtype=float)
+    peaks = blp.local_maxima(a, min_value=1.0)
+    assert (2, 2, 5.0) in peaks
+
+
+def test_nms_collapses_adjacent_peaks():
+    peaks = [(10, 10, 9.0), (11, 11, 8.0), (40, 40, 7.0)]
+    kept = blp.nms_peaks(peaks, min_distance=9.0)
+    assert len(kept) == 2                       # the two close ones merge to one
+    assert kept[0] == (10, 10, 9.0)             # strongest survives
+
+
+def test_find_ball_peaks_counts_line_of_four():
+    # Four balls (radius 10) in a line, centers 20px apart -> exactly 4 peaks.
+    dt = _cone_dt((30, 100), [(15, 15), (35, 15), (55, 15), (75, 15)], 10)
+    peaks, r = blp.find_ball_peaks(dt, 0.9, 0.5, fallback_radius=10,
+                                   min_radius_px=8)
+    assert len(peaks) == 4                       # not 8+ (the over-count bug)
+    assert abs(r - 10) <= 2
+
+
+def test_find_ball_peaks_counts_triangle_pile():
+    # Six balls in a triangular pile -> 6 peaks.
+    centers = [(30, 15), (50, 15), (70, 15),
+               (40, 33), (60, 33),
+               (50, 51)]
+    dt = _cone_dt((70, 100), centers, 10)
+    peaks, r = blp.find_ball_peaks(dt, 0.9, 0.5, fallback_radius=10,
+                                   min_radius_px=8)
+    assert len(peaks) == 6
+
+
+def test_assign_peaks_to_detections():
+    # One merged blob (big circle) over 3 peaks; a far single blob over 1 peak.
+    dets = [_ball(50, 50, 40), _ball(300, 50, 12)]
+    peaks = [(50, 30, 9), (50, 50, 9), (50, 70, 9),   # inside blob 0
+             (50, 300, 9)]                            # inside blob 1 (y,x)
+    counts = blp.assign_peaks_to_detections(dets, peaks)
+    assert counts == [3, 1]
+
+
+def test_clamp_count_to_area():
+    ball_area = 3.14159 * 10 * 10
+    # A blob about 4 balls in area: a peak count of 4 passes through.
+    assert blp.clamp_count_to_area(4, 4 * ball_area, ball_area, 0.6, 1.4) == 4
+    # An absurd peak count of 20 on a ~4-ball blob is clamped down.
+    assert blp.clamp_count_to_area(20, 4 * ball_area, ball_area, 0.6, 1.4) <= 6
+    # Always at least 1 for a real blob, even with 0 peaks.
+    assert blp.clamp_count_to_area(0, ball_area, ball_area, 0.6, 1.4) >= 1
+
+
+def test_tracker_passes_first_frame_through():
+    tr = blp.ClusterTracker(alpha=0.5, match_factor=1.5, max_misses=3)
+    out = tr.update([{"cx": 100, "cy": 100, "est": 3, "radius": 40,
+                      "distance": 0.0, "score": 3.0}])
+    assert len(out) == 1
+    assert out[0]["cx"] == 100 and out[0]["est"] == 3
+
+
+def test_tracker_smooths_position_across_frames():
+    tr = blp.ClusterTracker(alpha=0.5, match_factor=1.5, max_misses=3)
+    tr.update([{"cx": 100, "cy": 100, "est": 3, "radius": 40,
+                "distance": 0.0, "score": 3.0}])
+    out = tr.update([{"cx": 120, "cy": 100, "est": 3, "radius": 40,
+                      "distance": 0.0, "score": 3.0}])
+    assert abs(out[0]["cx"] - 110.0) < 1e-6      # 0.5*120 + 0.5*100
+    assert out[0]["est"] == 3
+
+
+def test_tracker_distance_blend_ignores_unknown():
+    tr = blp.ClusterTracker(alpha=0.5, match_factor=1.5, max_misses=3)
+    tr.update([{"cx": 100, "cy": 100, "est": 2, "radius": 40,
+                "distance": 30.0, "score": 2.0}])
+    # New frame has unknown distance (0) -> keep the prior known 30.
+    out = tr.update([{"cx": 100, "cy": 100, "est": 2, "radius": 40,
+                      "distance": 0.0, "score": 2.0}])
+    assert out[0]["distance"] == 30.0
+
+
+def test_tracker_matches_within_reach_and_drops_after_misses():
+    tr = blp.ClusterTracker(alpha=0.5, match_factor=1.5, max_misses=1)
+    tr.update([{"cx": 100, "cy": 100, "est": 3, "radius": 40,
+                "distance": 0.0, "score": 3.0}])
+    # A frame with no clusters: the track survives one miss.
+    assert tr.update([]) == []
+    assert len(tr._tracks) == 1
+    # Another empty frame exceeds max_misses -> the track is forgotten.
+    tr.update([])
+    assert len(tr._tracks) == 0
+
+
 # ---- plain-python runner (works without pytest) -----------------------------
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
