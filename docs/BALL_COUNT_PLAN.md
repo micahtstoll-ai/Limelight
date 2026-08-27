@@ -1,7 +1,11 @@
 # Plan: robust ball-count estimation (fix over-counting lines & piles)
 
-Status: **proposed** — not yet implemented. This is the design for replacing the
-current area-based count with something that reads a line of 4 balls as 4.
+Status: **implemented (P1 + P2)** — distance-transform peak counting is now the
+default (`Config.COUNT_METHOD = "peaks"`), with the ball radius self-calibrated
+from the peaks and an area clamp as a safety net. The area method remains
+available as `"area"`. Remaining optional work: P3 real-frame tuning and P4
+watershed for per-ball centroids (tracked in the issue). This document is kept
+as the design rationale.
 
 ## The problem
 

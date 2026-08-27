@@ -43,7 +43,11 @@ public class BallClusterResult {
         public final double radiusNorm;
         /** Distance to the cluster in inches, or 0 if unknown/not calibrated. */
         public final double distanceInches;
-        /** Ranking score (currently equals estimatedBalls). */
+        /**
+         * Ranking score. Equals {@link #estimatedBalls} today, but is kept as
+         * its own field on purpose: it is reserved to become a
+         * confidence-weighted score later, so do not assume score == ball count.
+         */
         public final double score;
 
         Cluster(double xNorm, double yNorm, int estimatedBalls,
