@@ -126,6 +126,8 @@ class Config:
 
     # ---- Output --------------------------------------------------------------
     # 4 clusters * 6 fields + 3 header = 27 doubles, within the 32 llpython cap.
+    # Deliberately 4 (not 5): we keep the per-cluster score field rather than
+    # drop it to fit a 5th pile. 4 ranked piles is plenty for strategy.
     MAX_CLUSTERS_REPORTED = 4  # how many clusters to pack into llpython
 
     # ---- Overlay drawing -----------------------------------------------------
@@ -152,7 +154,11 @@ class Config:
 #        +2 : estimated ball count in this cluster
 #        +3 : cluster radius, normalized to image width [0..1]
 #        +4 : distance to cluster, inches (0 = unknown / not calibrated)
-#        +5 : score (currently == estimated ball count)
+#        +5 : score -- the ranking value. Equals ball count today, but is kept
+#             as its own field on purpose: it becomes a confidence-weighted
+#             score later (see the "confidence into score" issue). We
+#             deliberately keep 4 clusters rather than drop this field to fit a
+#             5th; 4 ranked piles is plenty for strategy.
 #    unused trailing entries are 0.
 #
 #  Keep this table identical to BallClusterResult.java on the robot side.
