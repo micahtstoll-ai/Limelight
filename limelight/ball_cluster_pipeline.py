@@ -273,8 +273,19 @@ def summarize_cluster(members):
 
 
 def rank_clusters(summaries):
-    """Best cluster first: most balls, ties broken by tighter (smaller) radius."""
-    return sorted(summaries, key=lambda c: (-c["score"], c["radius"]))
+    """Best cluster first.
+
+    Order: most balls (score) wins. On a tie, the CLOSER pile wins (smaller
+    known distance). Unknown distance (0, uncalibrated) never masquerades as
+    "closest" -- it sorts last among a tie and we fall back to the tighter
+    (smaller) radius. So when the camera isn't distance-calibrated, every
+    distance is unknown and this collapses to the old radius tie-break.
+    """
+    def key(c):
+        dist = c.get("distance", 0.0)
+        dist_key = dist if dist > 0 else float("inf")
+        return (-c["score"], dist_key, c["radius"])
+    return sorted(summaries, key=key)
 
 
 def encode_llpython(summaries, total_balls, width, height, max_clusters):

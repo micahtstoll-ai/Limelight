@@ -86,6 +86,55 @@ def test_ranking_puts_biggest_cluster_first():
     assert ranked[1]["est"] == 1
 
 
+def test_ranking_prefers_closer_pile_on_tie():
+    # Two clusters, both 3 balls. The closer one (30in) should rank first.
+    summaries = [
+        {"cx": 100, "cy": 100, "est": 3, "radius": 40, "distance": 80.0,
+         "score": 3.0},
+        {"cx": 400, "cy": 100, "est": 3, "radius": 40, "distance": 30.0,
+         "score": 3.0},
+    ]
+    ranked = blp.rank_clusters(summaries)
+    assert ranked[0]["distance"] == 30.0
+    assert ranked[1]["distance"] == 80.0
+
+
+def test_ranking_ball_count_beats_distance():
+    # A far 4-ball pile still beats a close 2-ball pile.
+    summaries = [
+        {"cx": 100, "cy": 100, "est": 2, "radius": 20, "distance": 20.0,
+         "score": 2.0},
+        {"cx": 400, "cy": 100, "est": 4, "radius": 40, "distance": 90.0,
+         "score": 4.0},
+    ]
+    ranked = blp.rank_clusters(summaries)
+    assert ranked[0]["est"] == 4
+
+
+def test_ranking_uncalibrated_falls_back_to_radius():
+    # No distances known (0) -> tie broken by tighter (smaller) radius.
+    summaries = [
+        {"cx": 100, "cy": 100, "est": 3, "radius": 55, "distance": 0.0,
+         "score": 3.0},
+        {"cx": 400, "cy": 100, "est": 3, "radius": 30, "distance": 0.0,
+         "score": 3.0},
+    ]
+    ranked = blp.rank_clusters(summaries)
+    assert ranked[0]["radius"] == 30
+
+
+def test_ranking_known_distance_beats_unknown_on_tie():
+    # Same ball count: a cluster with a known distance ranks above an unknown.
+    summaries = [
+        {"cx": 100, "cy": 100, "est": 3, "radius": 30, "distance": 0.0,
+         "score": 3.0},
+        {"cx": 400, "cy": 100, "est": 3, "radius": 90, "distance": 50.0,
+         "score": 3.0},
+    ]
+    ranked = blp.rank_clusters(summaries)
+    assert ranked[0]["distance"] == 50.0
+
+
 def test_merged_blob_counts_as_multiple_balls_in_cluster():
     single = _ball(0, 0, 10)["area"]
     # One big merged blob whose area ~= 3 balls, sitting alone.

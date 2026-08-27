@@ -34,6 +34,12 @@ balls_in_blob = round(blob_area / one_ball_area)   # at least 1
 clean, round blobs. If nothing round is visible, we fall back to a configured
 ball size. This is what lets a clump read as "3 balls" instead of "1 big thing".
 
+> **Known limitation:** this area ÷ area method over-counts a *line* of touching
+> balls when the fallback ball size is off (a pure line has no clean single ball
+> to measure from). The fix — distance-transform peak counting, which uses the
+> fact that all balls are the same size — is designed in
+> [`BALL_COUNT_PLAN.md`](BALL_COUNT_PLAN.md).
+
 ### 4. Group into clusters  (`cluster_detections`)
 Balls that are close together belong to the same pile. We link two detections
 when the gap between their centers is within
@@ -46,8 +52,11 @@ the pile is close to the camera (big balls on screen) or far (small balls).
 
 ### 5. Summarize + rank  (`summarize_cluster`, `rank_clusters`)
 Each cluster becomes: a ball-count-weighted center, a total ball estimate, a
-radius (how big the pile looks), and a score. Clusters are sorted **most balls
-first**, ties broken by tighter radius (a compact pile beats a spread-out one).
+radius (how big the pile looks), a distance, and a score. Clusters are sorted
+**most balls first**; on a tie the **closer** pile wins (smaller known
+distance), and if distance is unknown/uncalibrated it falls back to the tighter
+(smaller) radius. So a 4-ball pile always outranks a 2-ball pile, but two
+3-ball piles are ordered nearest-first.
 
 ### 6. Send it to the robot  (`encode_llpython`, `best_cluster_contour`)
 - The ranked clusters are packed into the 32-double `llpython` array (schema at
