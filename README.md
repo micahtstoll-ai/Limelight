@@ -102,4 +102,5 @@ tests/test_ball_clustering.py         # off-hardware unit tests
 docs/HSV_TUNING.md                    # color calibration walkthrough
 docs/DISTANCE.md                      # distance estimation + focal-length calibration
 docs/HOW_IT_WORKS.md                  # the vision algorithm, explained
+docs/BALL_COUNT_PLAN.md               # proposed: robust count for lines/piles
 ```
