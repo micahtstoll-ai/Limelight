@@ -18,15 +18,25 @@ OpenCV's HSV ranges (note these are **not** the 0–360 / 0–100 you may expect
 | S (saturation) | 0–255 | how vivid — low = washed-out/gray |
 | V (value) | 0–255 | how bright — low = dark |
 
-## The fast way (Limelight dashboard)
+## Tuning in SnapScript (important)
+
+SnapScript pipelines do **not** have the built-in black-and-white threshold/mask
+view that the color-blob pipelines use. In SnapScript the dashboard just shows
+whatever image the script returns. So this pipeline has a **debug mask view**
+built in for tuning:
 
 1. Open the Limelight web UI and select your SnapScript pipeline.
-2. Switch the preview to show the **threshold / mask** view.
-3. Point at your ball and adjust the HSV sliders until:
-   - the ball is **solid white** in the mask, and
+2. In `ball_cluster_pipeline.py`, set `Config.DEBUG_VIEW = "mask"` and Save.
+3. The dashboard now shows the binary mask. Point at your ball and edit
+   `Config.HSV_LOWER` / `Config.HSV_UPPER` (Save after each change) until:
+   - the ball is **solid white**, and
    - the background is **solid black**.
-4. Copy those slider values into `Config.HSV_LOWER` and `Config.HSV_UPPER` in
-   `ball_cluster_pipeline.py`.
+4. Set `Config.DEBUG_VIEW = "normal"` again to go back to the annotated image.
+
+There are no live HSV sliders in SnapScript — you tune by editing the two
+`HSV_*` tuples and re-saving. The starting values below get you close fast; then
+nudge them while watching the mask. (Tip: use the Python `print()` output or the
+mask view to sanity-check; keep edits small so you can see each one's effect.)
 
 ## Good starting points
 

@@ -69,11 +69,16 @@ a laptop (`tests/test_ball_clustering.py`) with made-up ball layouts, so you can
 prove the logic is right before ever loading it onto the Limelight. Only the
 image stages need real frames.
 
+## Distance (optional, built in)
+
+Each detection's pixel diameter is turned into an inch distance with the pinhole
+model `distance ≈ focal_px · real_diameter / pixel_diameter`
+(`estimate_distance_in`). A cluster's distance is the ball-count-weighted
+average of its members' distances. It stays 0 ("unknown") until you set
+`CAMERA_FOCAL_PX` — a one-time measurement described in `docs/DISTANCE.md`.
+
 ## Ideas for building on this
 
-- **Distance estimate**: with `BALL_DIAMETER_IN` and the ball's pixel radius you
-  can estimate range (`distance ≈ focal_px · real_diameter / pixel_diameter`).
-  Calibrate `focal_px` once by measuring a ball at a known distance.
 - **Field position**: combine bearing (`tx`) + distance + robot pose to place
   each pile on the field.
 - **Temporal smoothing**: average a cluster's position over a few frames to

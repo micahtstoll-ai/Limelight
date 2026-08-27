@@ -18,12 +18,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "limelight"))
 import ball_cluster_pipeline as blp  # noqa: E402
 
 
-def _ball(cx, cy, r, est=1, circ=0.9):
+def _ball(cx, cy, r, est=1, circ=0.9, distance=0.0):
     """Build a detection dict like detect_blobs() would."""
     import math
     area = math.pi * r * r
     return {"cx": cx, "cy": cy, "r": r, "area": area,
-            "circularity": circ, "est": est}
+            "circularity": circ, "est": est, "distance": distance}
 
 
 def test_circularity_perfect_circle_is_one():
@@ -96,16 +96,47 @@ def test_merged_blob_counts_as_multiple_balls_in_cluster():
     assert summary["est"] == 3
 
 
+def test_estimate_distance_pinhole():
+    # focal 800px, 3in ball, 60px on screen -> 800*3/60 = 40in
+    assert abs(blp.estimate_distance_in(60, 800, 3.0) - 40.0) < 1e-6
+    # a bigger on-screen ball is closer
+    assert blp.estimate_distance_in(120, 800, 3.0) < \
+        blp.estimate_distance_in(60, 800, 3.0)
+
+
+def test_estimate_distance_unknown_when_uncalibrated():
+    assert blp.estimate_distance_in(60, 0, 3.0) == 0.0    # no focal length
+    assert blp.estimate_distance_in(0, 800, 3.0) == 0.0   # zero-size blob
+
+
+def test_calibrate_focal_px_is_inverse_of_distance():
+    # A 3in ball at 40in shows 60px -> focal should be 800px.
+    focal = blp.calibrate_focal_px(60, 40, 3.0)
+    assert abs(focal - 800.0) < 1e-6
+    assert abs(blp.estimate_distance_in(60, focal, 3.0) - 40.0) < 1e-6
+
+
+def test_cluster_distance_weighted_and_ignores_unknown():
+    # Two balls in one cluster: one at 30in (est 1), one unknown (est 1).
+    dets = [_ball(100, 100, 10, est=1, distance=30.0),
+            _ball(120, 100, 10, est=1, distance=0.0)]
+    summary = blp.summarize_cluster(dets)
+    # Unknown (0) is ignored, so the cluster distance is just the 30in ball.
+    assert abs(summary["distance"] - 30.0) < 1e-6
+
+
 def test_encode_llpython_layout_and_normalization():
     # Best cluster dead-center-right, second cluster top-left.
     summaries = [
-        {"cx": 480, "cy": 240, "est": 3, "radius": 64, "score": 3.0},
-        {"cx": 160, "cy": 120, "est": 1, "radius": 20, "score": 1.0},
+        {"cx": 480, "cy": 240, "est": 3, "radius": 64, "distance": 42.0,
+         "score": 3.0},
+        {"cx": 160, "cy": 120, "est": 1, "radius": 20, "distance": 0.0,
+         "score": 1.0},
     ]
     out = blp.encode_llpython(summaries, total_balls=4, width=640,
-                              height=480, max_clusters=5)
+                              height=480, max_clusters=4)
     assert len(out) == blp.LLPYTHON_SIZE
-    assert out[0] == blp.SCHEMA_VERSION
+    assert out[0] == blp.SCHEMA_VERSION      # 2
     assert out[1] == 4.0                     # total balls
     assert out[2] == 2.0                     # clusters reported
     # cluster 0 center x: (480-320)/320 = 0.5 ; y: (240-240)/240 = 0
@@ -113,16 +144,19 @@ def test_encode_llpython_layout_and_normalization():
     assert abs(out[4] - 0.0) < 1e-6
     assert out[5] == 3.0                     # est balls
     assert abs(out[6] - 64 / 640) < 1e-6     # radius normalized to width
-    # cluster 1 center x: (160-320)/320 = -0.5 ; y: (120-240)/240 = -0.5
-    assert abs(out[8] - (-0.5)) < 1e-6
+    assert abs(out[7] - 42.0) < 1e-6         # distance inches
+    assert out[8] == 3.0                     # score
+    # cluster 1 block starts at 3 + 6 = 9
+    # center x: (160-320)/320 = -0.5 ; y: (120-240)/240 = -0.5
     assert abs(out[9] - (-0.5)) < 1e-6
+    assert abs(out[10] - (-0.5)) < 1e-6
 
 
 def test_encode_respects_max_clusters():
-    summaries = [{"cx": 10 * i, "cy": 10, "est": 1, "radius": 5, "score": 1.0}
-                 for i in range(8)]
-    out = blp.encode_llpython(summaries, 8, 640, 480, max_clusters=5)
-    assert out[2] == 5.0                      # capped at 5
+    summaries = [{"cx": 10 * i, "cy": 10, "est": 1, "radius": 5,
+                  "distance": 0.0, "score": 1.0} for i in range(8)]
+    out = blp.encode_llpython(summaries, 8, 640, 480, max_clusters=4)
+    assert out[2] == 4.0                      # capped at 4
 
 
 # ---- plain-python runner (works without pytest) -----------------------------

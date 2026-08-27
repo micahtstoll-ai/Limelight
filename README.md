@@ -43,7 +43,12 @@ tunable, and testable — so the team can build on it instead of fighting it.
 4. Open the dashboard preview, point the camera at some balls, and confirm you
    see blue circles on balls and colored circles around clusters.
 5. **Tune the color** — see [`docs/HSV_TUNING.md`](docs/HSV_TUNING.md). This is
-   the single most important step for reliable detection.
+   the single most important step for reliable detection. (SnapScript has no
+   built-in mask view, so the pipeline includes a `DEBUG_VIEW = "mask"` toggle
+   for tuning.)
+6. **(Optional) Calibrate distance** — see [`docs/DISTANCE.md`](docs/DISTANCE.md)
+   to get real inch distances to each cluster. Skippable; everything else works
+   without it.
 
 ### 2. Add the Java files to your robot
 1. Copy `teamcode/vision/BallClusterResult.java` and
@@ -69,12 +74,14 @@ All tunables live in the `Config` class at the top of
 | Setting | What it controls |
 |---|---|
 | `HSV_LOWER` / `HSV_UPPER` | The target color. **Tune these first.** |
+| `DEBUG_VIEW` | Set to `"mask"` to see the color mask for HSV tuning (SnapScript has no built-in mask view); `"normal"` otherwise. |
 | `BALL_DIAMETER_IN` | Real ball size (for distance math). |
+| `CAMERA_FOCAL_PX` | Focal length in px for distance estimation; `0` = not calibrated (distance reported as unknown). See [`docs/DISTANCE.md`](docs/DISTANCE.md). |
 | `MIN_AREA_PX` / `MAX_AREA_PX` | Reject specks and giant background blobs. |
 | `MIN_CIRCULARITY` | How round a blob must be to count as ball(s). |
 | `FALLBACK_SINGLE_BALL_RADIUS_PX` | On-screen size of one ball, used when no clean reference ball is visible. |
 | `CLUSTER_LINK_FACTOR` | How close balls must be to join one cluster. |
-| `MAX_CLUSTERS_REPORTED` | How many clusters to send to the robot. |
+| `MAX_CLUSTERS_REPORTED` | How many clusters to send to the robot (max 4). |
 
 ## Adapting to a different ball / game
 
@@ -93,5 +100,6 @@ teamcode/vision/BallClusterResult.java        # llpython decoder
 teamcode/vision/BallClusterVisionOpMode.java  # sample OpMode
 tests/test_ball_clustering.py         # off-hardware unit tests
 docs/HSV_TUNING.md                    # color calibration walkthrough
+docs/DISTANCE.md                      # distance estimation + focal-length calibration
 docs/HOW_IT_WORKS.md                  # the vision algorithm, explained
 ```

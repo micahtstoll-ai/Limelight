@@ -62,6 +62,17 @@ class Config:
     # Outer diameter of the ball in inches. Used for distance estimation.
     BALL_DIAMETER_IN = 3.0
 
+    # ---- Distance estimation -------------------------------------------------
+    # Camera focal length in PIXELS, for the pinhole model
+    #     distance_in = focal_px * ball_diameter_in / ball_pixel_diameter
+    # This is a ONE-TIME calibration per camera + resolution. Put one ball at a
+    # known distance, read its on-screen pixel diameter, then:
+    #     CAMERA_FOCAL_PX = pixel_diameter * known_distance_in / BALL_DIAMETER_IN
+    # (helper: calibrate_focal_px() below; walkthrough in docs/DISTANCE.md).
+    # Leave at 0.0 until calibrated -- distances are then reported as 0 (unknown)
+    # and everything else still works.
+    CAMERA_FOCAL_PX = 0.0
+
     # ---- Blob filtering ------------------------------------------------------
     # A blob must pass ALL of these to count as ball(s). Values are in pixels
     # for a 640x480 stream -- scale them if you change resolution.
@@ -91,32 +102,41 @@ class Config:
     CLUSTER_LINK_FACTOR = 2.0
 
     # ---- Output --------------------------------------------------------------
-    MAX_CLUSTERS_REPORTED = 5  # how many clusters to pack into llpython
+    # 4 clusters * 6 fields + 3 header = 27 doubles, within the 32 llpython cap.
+    MAX_CLUSTERS_REPORTED = 4  # how many clusters to pack into llpython
 
     # ---- Overlay drawing -----------------------------------------------------
     DRAW_OVERLAYS = True
+
+    # ---- Debug view ----------------------------------------------------------
+    # SnapScript has no separate built-in threshold view -- the dashboard shows
+    # whatever image this pipeline returns. Set to "mask" to send the binary
+    # color mask to the dashboard for HSV tuning (ball = white, background =
+    # black); set back to "normal" for the annotated camera image.
+    DEBUG_VIEW = "normal"      # "normal" | "mask"
 
 
 # =============================================================================
 #  llpython OUTPUT SCHEMA  (32 doubles, read on the robot with
 #  result.getPythonOutput())
 #
-#    index 0 : SCHEMA_VERSION (currently 1)
+#    index 0 : SCHEMA_VERSION (currently 2)
 #    index 1 : total estimated balls in the whole frame
 #    index 2 : number of clusters reported (K, 0..MAX_CLUSTERS_REPORTED)
-#    then K blocks of 5 doubles, best cluster first:
+#    then K blocks of 6 doubles, best cluster first:
 #        +0 : center X, normalized [-1..1]  (left -1, right +1)
 #        +1 : center Y, normalized [-1..1]  (top  -1, bottom +1)
 #        +2 : estimated ball count in this cluster
 #        +3 : cluster radius, normalized to image width [0..1]
-#        +4 : score (currently == estimated ball count)
+#        +4 : distance to cluster, inches (0 = unknown / not calibrated)
+#        +5 : score (currently == estimated ball count)
 #    unused trailing entries are 0.
 #
 #  Keep this table identical to BallClusterResult.java on the robot side.
 # =============================================================================
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 HEADER_FIELDS = 3
-FIELDS_PER_CLUSTER = 5
+FIELDS_PER_CLUSTER = 6
 LLPYTHON_SIZE = 32
 
 
@@ -128,6 +148,30 @@ def circularity(area, perimeter):
     if perimeter <= 0:
         return 0.0
     return float(4.0 * math.pi * area / (perimeter * perimeter))
+
+
+def estimate_distance_in(pixel_diameter, focal_px, real_diameter_in):
+    """Distance to a ball via the pinhole model.
+
+    distance = focal_px * real_diameter / pixel_diameter
+
+    A bigger ball on screen (larger pixel_diameter) means it's closer. Returns
+    0.0 (unknown) if we can't compute it -- no calibration, or a zero-size blob.
+    """
+    if focal_px <= 0 or pixel_diameter <= 0:
+        return 0.0
+    return float(focal_px * real_diameter_in / pixel_diameter)
+
+
+def calibrate_focal_px(pixel_diameter, known_distance_in, real_diameter_in):
+    """One-time calibration helper (inverse of estimate_distance_in).
+
+    Put a ball at a known distance, read its on-screen pixel diameter, and pass
+    all three here to get the CAMERA_FOCAL_PX value to paste into Config.
+    """
+    if real_diameter_in <= 0:
+        return 0.0
+    return float(pixel_diameter * known_distance_in / real_diameter_in)
 
 
 def estimate_ball_count(area, single_ball_area):
@@ -198,7 +242,9 @@ def summarize_cluster(members):
     """Reduce a cluster (list of detection dicts) to a summary dict.
 
     center = ball-count-weighted centroid; est = sum of member estimates;
-    radius = distance from center to the farthest member edge; score = est.
+    radius = distance from center to the farthest member edge; score = est;
+    distance = ball-count-weighted mean of member distances (0 if none known).
+    Members without a 'distance' key are treated as unknown (0).
     """
     total_est = sum(m["est"] for m in members)
     weight = float(total_est) if total_est > 0 else float(len(members))
@@ -207,11 +253,21 @@ def summarize_cluster(members):
     radius = 0.0
     for m in members:
         radius = max(radius, math.hypot(m["cx"] - cx, m["cy"] - cy) + m["r"])
+    # Average only over members with a known (>0) distance, weighted by est.
+    dist_weight = sum(m["est"] for m in members if m.get("distance", 0) > 0)
+    if dist_weight > 0:
+        distance = sum(
+            m.get("distance", 0) * m["est"]
+            for m in members if m.get("distance", 0) > 0
+        ) / dist_weight
+    else:
+        distance = 0.0
     return {
         "cx": cx,
         "cy": cy,
         "est": total_est,
         "radius": radius,
+        "distance": distance,
         "score": float(total_est),
     }
 
@@ -238,7 +294,8 @@ def encode_llpython(summaries, total_balls, width, height, max_clusters):
         out[base + 1] = (c["cy"] - half_h) / half_h         # y norm [-1..1]
         out[base + 2] = float(c["est"])                     # ball count
         out[base + 3] = c["radius"] / width if width else 0.0
-        out[base + 4] = c["score"]
+        out[base + 4] = c.get("distance", 0.0)              # inches (0=unknown)
+        out[base + 5] = c["score"]
     return out
 
 
@@ -318,6 +375,8 @@ def draw_overlays(image, detections, ranked, width, height):
         center = (int(c["cx"]), int(c["cy"]))
         cv2.circle(image, center, int(c["radius"]), color, 2)
         label = "#{} balls~{}".format(i + 1, c["est"])
+        if c.get("distance", 0) > 0:
+            label += " {:.0f}in".format(c["distance"])
         cv2.putText(
             image, label, (center[0] - 40, center[1] - int(c["radius"]) - 6),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2,
@@ -360,6 +419,9 @@ def runPipeline(image, llrobot):
     )
     for d in detections:
         d["est"] = estimate_ball_count(d["area"], single_area)
+        d["distance"] = estimate_distance_in(
+            2.0 * d["r"], Config.CAMERA_FOCAL_PX, Config.BALL_DIAMETER_IN
+        )
 
     # Cluster, summarize, rank.
     groups = cluster_detections(detections, Config.CLUSTER_LINK_FACTOR)
@@ -379,8 +441,19 @@ def runPipeline(image, llrobot):
         ranked, total_balls, width, height, Config.MAX_CLUSTERS_REPORTED
     )
 
-    if Config.DRAW_OVERLAYS:
-        image = draw_overlays(image, detections, ranked, width, height)
+    # In SnapScript mode the dashboard shows whatever image we return -- there
+    # is no separate built-in threshold/mask view. So when tuning color, flip
+    # Config.DEBUG_VIEW to "mask" to send the black-and-white mask back to the
+    # dashboard instead of the camera image. Tune HSV until the ball is solid
+    # white and the background is solid black, then set it back to "normal".
+    if Config.DEBUG_VIEW == "mask":
+        output_image = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    else:
+        output_image = image
+        if Config.DRAW_OVERLAYS:
+            output_image = draw_overlays(
+                output_image, detections, ranked, width, height
+            )
 
     largest = best_cluster_contour(ranked, detections)
-    return largest, image, llpython
+    return largest, output_image, llpython

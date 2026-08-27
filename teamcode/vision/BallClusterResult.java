@@ -16,19 +16,20 @@ import java.util.List;
  *   [0] schema version (expected {@value #SCHEMA_VERSION})
  *   [1] total estimated balls in frame
  *   [2] number of clusters reported (K)
- *   then K blocks of 5 doubles, best cluster first:
+ *   then K blocks of 6 doubles, best cluster first:
  *       +0 center X, normalized [-1..1]  (left -1, right +1)
  *       +1 center Y, normalized [-1..1]  (top  -1, bottom +1)
  *       +2 estimated ball count
  *       +3 cluster radius, normalized to image width [0..1]
- *       +4 score
+ *       +4 distance to cluster, inches (0 = unknown / not calibrated)
+ *       +5 score
  * </pre>
  */
 public class BallClusterResult {
 
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
     private static final int HEADER_FIELDS = 3;
-    private static final int FIELDS_PER_CLUSTER = 5;
+    private static final int FIELDS_PER_CLUSTER = 6;
 
     /** One detected group of balls. */
     public static class Cluster {
@@ -40,23 +41,33 @@ public class BallClusterResult {
         public final int estimatedBalls;
         /** Cluster radius as a fraction of image width [0..1]. */
         public final double radiusNorm;
+        /** Distance to the cluster in inches, or 0 if unknown/not calibrated. */
+        public final double distanceInches;
         /** Ranking score (currently equals estimatedBalls). */
         public final double score;
 
         Cluster(double xNorm, double yNorm, int estimatedBalls,
-                double radiusNorm, double score) {
+                double radiusNorm, double distanceInches, double score) {
             this.xNorm = xNorm;
             this.yNorm = yNorm;
             this.estimatedBalls = estimatedBalls;
             this.radiusNorm = radiusNorm;
+            this.distanceInches = distanceInches;
             this.score = score;
+        }
+
+        /** True if a real distance estimate is available (camera calibrated). */
+        public boolean hasDistance() {
+            return distanceInches > 0;
         }
 
         @Override
         public String toString() {
+            String dist = hasDistance()
+                ? String.format("%.0fin", distanceInches) : "?";
             return String.format(
-                "Cluster[balls=%d x=%.2f y=%.2f r=%.2f score=%.1f]",
-                estimatedBalls, xNorm, yNorm, radiusNorm, score);
+                "Cluster[balls=%d x=%.2f y=%.2f r=%.2f dist=%s score=%.1f]",
+                estimatedBalls, xNorm, yNorm, radiusNorm, dist, score);
         }
     }
 
@@ -93,7 +104,8 @@ public class BallClusterResult {
                 py[base + 1],
                 (int) Math.round(py[base + 2]),
                 py[base + 3],
-                py[base + 4]));
+                py[base + 4],
+                py[base + 5]));
         }
         return new BallClusterResult(totalBalls, clusters);
     }

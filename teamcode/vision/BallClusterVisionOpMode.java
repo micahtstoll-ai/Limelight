@@ -75,6 +75,10 @@ public class BallClusterVisionOpMode extends LinearOpMode {
                     "%.1f deg", bearingFromNorm);
                 telemetry.addData("Best cluster bearing (Limelight tx)",
                     "%.1f deg", result.getTx());
+                telemetry.addData("Best cluster distance",
+                    best.hasDistance()
+                        ? String.format("%.0f in", best.distanceInches)
+                        : "unknown (calibrate CAMERA_FOCAL_PX)");
 
                 // Example: a simple proportional "turn toward the pile" value
                 // you could feed to a drivetrain. Left stick etc. omitted.
