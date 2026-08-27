@@ -100,7 +100,10 @@ All tunables live in the `Config` class at the top of
 limelight/ball_cluster_pipeline.py   # the SnapScript that runs on the camera
 teamcode/vision/BallClusterResult.java        # llpython decoder
 teamcode/vision/BallClusterVisionOpMode.java  # sample OpMode
+teamcode/vision/FieldLocalizer.java           # cluster -> field position (needs distance calibration)
+tools/field_localization.py           # validated reference for the localizer math
 tests/test_ball_clustering.py         # off-hardware unit tests
+tests/test_field_localization.py      # field-localization geometry tests
 docs/HSV_TUNING.md                    # color calibration walkthrough
 docs/DISTANCE.md                      # distance estimation + focal-length calibration
 docs/HOW_IT_WORKS.md                  # the vision algorithm, explained
