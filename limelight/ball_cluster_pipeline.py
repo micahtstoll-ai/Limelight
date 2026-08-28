@@ -85,6 +85,13 @@ class Config:
     #                            merged balls / occluded balls are less round,
     #                            so keep this fairly forgiving.
 
+    # ---- Mask erosion --------------------------------------------------------
+    # Shrinks the color mask after the open/close cleanup. Helps pull apart
+    # balls that only touch at a thin bridge and removes leftover noise. It also
+    # shrinks real balls, so keep it light. Set EROSION_ITERATIONS = 0 to skip.
+    EROSION_ITERATIONS = 1
+    EROSION_KERNEL_SIZE = 3    # px; odd numbers (3, 5, ...)
+
     # ---- Ball-count estimation ----------------------------------------------
     # When balls touch, their color blobs merge into one bigger blob. We
     # estimate how many balls a blob holds by comparing its area to the area
@@ -569,6 +576,20 @@ def threshold_color(image):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    # Optional erosion: shrink the blobs. This pinches apart balls that only
+    # touch at a thin bridge (so they become separate contours) and eats any
+    # noise that survived the open. It also shrinks real balls, so keep it
+    # light -- 1 iteration of a small kernel usually helps without hurting.
+    # Note: erosion reduces the on-screen ball size, which feeds distance and
+    # area, so calibrate CAMERA_FOCAL_PX with erosion at its final setting.
+    if Config.EROSION_ITERATIONS > 0:
+        erode_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (Config.EROSION_KERNEL_SIZE, Config.EROSION_KERNEL_SIZE),
+        )
+        mask = cv2.erode(mask, erode_kernel,
+                         iterations=Config.EROSION_ITERATIONS)
     return mask
 
 

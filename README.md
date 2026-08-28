@@ -79,6 +79,7 @@ All tunables live in the `Config` class at the top of
 | `CAMERA_FOCAL_PX` | Focal length in px for distance estimation; `0` = not calibrated (distance reported as unknown). See [`docs/DISTANCE.md`](docs/DISTANCE.md). |
 | `MIN_AREA_PX` / `MAX_AREA_PX` | Reject specks and giant background blobs. |
 | `MIN_CIRCULARITY` | How round a blob must be to count as ball(s). |
+| `EROSION_ITERATIONS` | Shrinks the mask to pull apart touching balls and remove noise; 0 disables. Keep light (1). |
 | `COUNT_METHOD` | `"peaks"` (distance-transform peak count, counts lines/piles correctly) or `"area"` (simpler area ratio). |
 | `FALLBACK_SINGLE_BALL_RADIUS_PX` | On-screen size of one ball, used by the `"area"` method / as a peak-count fallback. |
 | `CLUSTER_LINK_FACTOR` | How close balls must be to join one cluster. |

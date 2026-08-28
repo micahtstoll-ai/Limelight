@@ -10,7 +10,9 @@ function in the file.
 Convert the frame to HSV and keep only pixels inside the target color range.
 The result is a black-and-white **mask**: white where the ball color is, black
 everywhere else. We clean it with morphological *open* (remove speckle) and
-*close* (fill small holes in the ball). See `docs/HSV_TUNING.md`.
+*close* (fill small holes in the ball), then an optional light *erosion*
+(`EROSION_ITERATIONS`) that shrinks the blobs to pull apart balls touching at a
+thin bridge and eat leftover noise. See `docs/HSV_TUNING.md`.
 
 ### 2. Blobs → ball detections  (`detect_blobs`)
 Find the outlines (contours) of the white regions. Each contour is measured:
