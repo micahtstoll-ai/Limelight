@@ -79,6 +79,7 @@ All tunables live in the `Config` class at the top of
 | `CAMERA_FOCAL_PX` | Focal length in px for distance estimation; `0` = not calibrated (distance reported as unknown). See [`docs/DISTANCE.md`](docs/DISTANCE.md). |
 | `MIN_AREA_PX` / `MAX_AREA_PX` | Reject specks and giant background blobs. |
 | `MIN_CIRCULARITY` | How round a blob must be to count as ball(s). |
+| `EROSION_ITERATIONS` | Shrinks the mask to pull apart touching balls and remove noise; 0 disables. Keep light (1). |
 | `COUNT_METHOD` | `"peaks"` (distance-transform peak count, counts lines/piles correctly) or `"area"` (simpler area ratio). |
 | `FALLBACK_SINGLE_BALL_RADIUS_PX` | On-screen size of one ball, used by the `"area"` method / as a peak-count fallback. |
 | `CLUSTER_LINK_FACTOR` | How close balls must be to join one cluster. |
@@ -100,7 +101,10 @@ All tunables live in the `Config` class at the top of
 limelight/ball_cluster_pipeline.py   # the SnapScript that runs on the camera
 teamcode/vision/BallClusterResult.java        # llpython decoder
 teamcode/vision/BallClusterVisionOpMode.java  # sample OpMode
+teamcode/vision/FieldLocalizer.java           # cluster -> field position (needs distance calibration)
+tools/field_localization.py           # validated reference for the localizer math
 tests/test_ball_clustering.py         # off-hardware unit tests
+tests/test_field_localization.py      # field-localization geometry tests
 docs/HSV_TUNING.md                    # color calibration walkthrough
 docs/DISTANCE.md                      # distance estimation + focal-length calibration
 docs/HOW_IT_WORKS.md                  # the vision algorithm, explained

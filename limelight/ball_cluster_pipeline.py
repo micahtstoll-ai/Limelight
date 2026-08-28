@@ -47,6 +47,7 @@ import numpy as np
 # =============================================================================
 class Config:
     # ---- Color threshold (HSV) ----------------------------------------------
+    # Confirmed target: a single YELLOW ball, ~3 inch outer diameter.
     # OpenCV HSV ranges: H 0-179, S 0-255, V 0-255.
     # These defaults target a saturated YELLOW ball. Use the Limelight
     # dashboard's "eyedropper" / HSV tuner, or docs/HSV_TUNING.md, to dial
@@ -83,6 +84,13 @@ class Config:
     MIN_CIRCULARITY = 0.55     # 1.0 = perfect circle. A single ball is round;
     #                            merged balls / occluded balls are less round,
     #                            so keep this fairly forgiving.
+
+    # ---- Mask erosion --------------------------------------------------------
+    # Shrinks the color mask after the open/close cleanup. Helps pull apart
+    # balls that only touch at a thin bridge and removes leftover noise. It also
+    # shrinks real balls, so keep it light. Set EROSION_ITERATIONS = 0 to skip.
+    EROSION_ITERATIONS = 1
+    EROSION_KERNEL_SIZE = 3    # px; odd numbers (3, 5, ...)
 
     # ---- Ball-count estimation ----------------------------------------------
     # When balls touch, their color blobs merge into one bigger blob. We
@@ -123,6 +131,18 @@ class Config:
     SMOOTHING_MATCH_FACTOR = 1.5     # match a cluster to a prior one within this
     #                                  x its radius
     SMOOTHING_MAX_MISSES = 3         # forget a track after this many missed frames
+
+    # ---- Ranking score -------------------------------------------------------
+    # Blend a per-cluster confidence into the ranking score so that ragged,
+    # uncertain blobs rank below clean, solid ones when ball counts are close.
+    # Confidence is each detection's solidity (contour area / convex-hull area):
+    # a real ball -- single or a tight pile -- is convex and solid, while noise,
+    # reflections, and thin shapes are not. Solidity is used (not circularity)
+    # on purpose: it does NOT penalize a legitimately dense, elongated pile.
+    # score = est * (FLOOR + (1 - FLOOR) * confidence), so ball count stays
+    # dominant and only near-ties get reordered by confidence.
+    SCORE_USE_CONFIDENCE = True
+    SCORE_CONFIDENCE_FLOOR = 0.5     # fraction of the raw count kept at conf 0
 
     # ---- Output --------------------------------------------------------------
     # 4 clusters * 6 fields + 3 header = 27 doubles, within the 32 llpython cap.
@@ -381,9 +401,11 @@ def summarize_cluster(members):
     """Reduce a cluster (list of detection dicts) to a summary dict.
 
     center = ball-count-weighted centroid; est = sum of member estimates;
-    radius = distance from center to the farthest member edge; score = est;
-    distance = ball-count-weighted mean of member distances (0 if none known).
-    Members without a 'distance' key are treated as unknown (0).
+    radius = distance from center to the farthest member edge;
+    distance = ball-count-weighted mean of member distances (0 if none known);
+    confidence = ball-count-weighted mean of member confidences (default 1.0);
+    score = est, optionally down-weighted by confidence (see Config).
+    Members without a 'distance'/'confidence' key are treated as unknown/1.0.
     """
     total_est = sum(m["est"] for m in members)
     weight = float(total_est) if total_est > 0 else float(len(members))
@@ -401,13 +423,22 @@ def summarize_cluster(members):
         ) / dist_weight
     else:
         distance = 0.0
+    # Confidence: est-weighted mean of member confidences (absent -> 1.0).
+    confidence = sum(m.get("confidence", 1.0) * m["est"]
+                     for m in members) / weight
+    if Config.SCORE_USE_CONFIDENCE:
+        floor = Config.SCORE_CONFIDENCE_FLOOR
+        score = total_est * (floor + (1.0 - floor) * confidence)
+    else:
+        score = float(total_est)
     return {
         "cx": cx,
         "cy": cy,
         "est": total_est,
         "radius": radius,
         "distance": distance,
-        "score": float(total_est),
+        "confidence": confidence,
+        "score": float(score),
     }
 
 
@@ -440,7 +471,7 @@ class ClusterTracker:
     Pure Python (no OpenCV/numpy) so it is unit-testable off the robot.
     """
 
-    _SMOOTHED = ("cx", "cy", "radius", "distance", "score", "est")
+    _SMOOTHED = ("cx", "cy", "radius", "distance", "score", "est", "confidence")
 
     def __init__(self, alpha, match_factor, max_misses):
         self.alpha = alpha
@@ -494,13 +525,13 @@ class ClusterTracker:
                     survivors.append(t)
         self._tracks = survivors
 
-        # hand back this frame's clusters with integer est / matching score
+        # hand back this frame's clusters with integer est; keep the smoothed
+        # score (it embeds confidence and no longer just equals est).
         out = []
         for t in results:
             c = dict(t)
             c.pop("misses", None)
             c["est"] = max(1, int(round(t["est"])))
-            c["score"] = float(c["est"])
             out.append(c)
         return out
 
@@ -545,6 +576,20 @@ def threshold_color(image):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    # Optional erosion: shrink the blobs. This pinches apart balls that only
+    # touch at a thin bridge (so they become separate contours) and eats any
+    # noise that survived the open. It also shrinks real balls, so keep it
+    # light -- 1 iteration of a small kernel usually helps without hurting.
+    # Note: erosion reduces the on-screen ball size, which feeds distance and
+    # area, so calibrate CAMERA_FOCAL_PX with erosion at its final setting.
+    if Config.EROSION_ITERATIONS > 0:
+        erode_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (Config.EROSION_KERNEL_SIZE, Config.EROSION_KERNEL_SIZE),
+        )
+        mask = cv2.erode(mask, erode_kernel,
+                         iterations=Config.EROSION_ITERATIONS)
     return mask
 
 
@@ -566,6 +611,11 @@ def detect_blobs(mask):
         if r < Config.MIN_RADIUS_PX or r > Config.MAX_RADIUS_PX:
             continue
         perim = cv2.arcLength(c, True)
+        # Solidity = area / convex-hull area. ~1 for a real ball or tight pile
+        # (convex, solid); lower for noise, reflections, or thin shapes. Used as
+        # the detection's confidence for ranking (see Config SCORE_*).
+        hull_area = cv2.contourArea(cv2.convexHull(c))
+        solidity = area / hull_area if hull_area > 0 else 0.0
         detections.append(
             {
                 "cx": float(x),
@@ -573,6 +623,7 @@ def detect_blobs(mask):
                 "r": float(r),
                 "area": float(area),
                 "circularity": circularity(area, perim),
+                "confidence": float(min(1.0, max(0.0, solidity))),
                 "contour": c,
             }
         )

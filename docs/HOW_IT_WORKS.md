@@ -10,7 +10,9 @@ function in the file.
 Convert the frame to HSV and keep only pixels inside the target color range.
 The result is a black-and-white **mask**: white where the ball color is, black
 everywhere else. We clean it with morphological *open* (remove speckle) and
-*close* (fill small holes in the ball). See `docs/HSV_TUNING.md`.
+*close* (fill small holes in the ball), then an optional light *erosion*
+(`EROSION_ITERATIONS`) that shrinks the blobs to pull apart balls touching at a
+thin bridge and eat leftover noise. See `docs/HSV_TUNING.md`.
 
 ### 2. Blobs → ball detections  (`detect_blobs`)
 Find the outlines (contours) of the white regions. Each contour is measured:
@@ -97,11 +99,22 @@ model `distance ≈ focal_px · real_diameter / pixel_diameter`
 average of its members' distances. It stays 0 ("unknown") until you set
 `CAMERA_FOCAL_PX` — a one-time measurement described in `docs/DISTANCE.md`.
 
-## Ideas for building on this
+## Field position (robot-side, needs distance calibration)
 
-- **Field position**: combine bearing (`tx`) + distance + robot pose to place
-  each pile on the field.
-- **Temporal smoothing**: average a cluster's position over a few frames to
-  steady a jumpy target.
-- **Confidence**: fold circularity / fill-ratio into the score so ragged,
-  uncertain blobs rank below clean ones.
+`teamcode/vision/FieldLocalizer.java` turns a cluster's bearing + distance +
+the robot's pose into a field (x, y) position, so you can plan a path to a pile
+rather than just turn toward it. It runs on the robot (where the pose lives) and
+returns `null` until distance is calibrated. The geometry is validated by
+`tools/field_localization.py` and `tests/test_field_localization.py`.
+
+## Already built on top of the basics
+
+- **Temporal smoothing** (`ClusterTracker`): averages each cluster over recent
+  frames for a steadier target.
+- **Confidence in the score**: each detection's solidity feeds the ranking
+  score so ragged, uncertain blobs rank below clean, solid ones on near-ties.
+- **Distance** (above) and **field position** (above).
+
+Further ideas: send the robot pose to the Limelight via `llrobot` so it can
+report field positions directly; or fuse multiple frames for occlusion handling
+(watershed, per the ball-count plan).

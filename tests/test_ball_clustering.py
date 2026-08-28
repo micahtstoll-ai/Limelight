@@ -208,6 +208,43 @@ def test_encode_respects_max_clusters():
     assert out[2] == 4.0                      # capped at 4
 
 
+def test_score_equals_est_when_fully_confident():
+    # Members with confidence 1.0 (or absent) -> score == est.
+    m = _ball(100, 100, 10, est=1)
+    m["confidence"] = 1.0
+    s = blp.summarize_cluster([m, dict(m)])
+    assert s["est"] == 2
+    assert abs(s["score"] - 2.0) < 1e-6
+
+
+def test_score_downweighted_by_low_confidence():
+    # confidence 0.5, floor 0.5 -> score = est * (0.5 + 0.5*0.5) = est * 0.75.
+    m1 = _ball(100, 100, 10, est=1); m1["confidence"] = 0.5
+    m2 = _ball(112, 100, 10, est=1); m2["confidence"] = 0.5
+    s = blp.summarize_cluster([m1, m2])
+    assert s["est"] == 2
+    assert abs(s["confidence"] - 0.5) < 1e-6
+    assert abs(s["score"] - 1.5) < 1e-6
+
+
+def test_score_absent_confidence_defaults_to_full():
+    # _ball() sets no confidence key -> treated as 1.0 -> score == est.
+    s = blp.summarize_cluster([_ball(50, 50, 10, est=3)])
+    assert abs(s["score"] - 3.0) < 1e-6
+
+
+def test_ranking_prefers_more_confident_on_equal_count():
+    # Two clusters, both 3 balls, no distance: the more confident wins.
+    summaries = [
+        {"cx": 100, "cy": 100, "est": 3, "radius": 40, "distance": 0.0,
+         "confidence": 0.4, "score": 3 * (0.5 + 0.5 * 0.4)},
+        {"cx": 400, "cy": 100, "est": 3, "radius": 40, "distance": 0.0,
+         "confidence": 0.95, "score": 3 * (0.5 + 0.5 * 0.95)},
+    ]
+    ranked = blp.rank_clusters(summaries)
+    assert ranked[0]["confidence"] == 0.95
+
+
 def _cone_dt(shape, centers, radius):
     """Synthesize a distance-transform-like array: a cone of height `radius` at
     each ball center (max where cones overlap). This mimics the distance
