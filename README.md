@@ -33,6 +33,37 @@ tunable, and testable — so the team can build on it instead of fighting it.
 3. **`teamcode/vision/BallClusterVisionOpMode.java`** is a runnable sample that
    prints the clusters and shows how to turn toward the best pile.
 
+## Why a Python pipeline instead of just an HSV color blob?
+
+The Limelight's built-in color pipeline is essentially "HSV threshold -> find
+the biggest blob -> hand back its `tx`, `ty`, and area." That is perfect for
+aiming at *one* target, and it is all you need for a lot of games. But it can
+only ever tell you about a single blob, and it has no idea what that blob *is*.
+
+This project runs a **Python SnapScript** instead, which executes full OpenCV +
+numpy on every frame. That lets the camera do things the fixed color pipeline
+simply cannot express:
+
+| Question | Built-in HSV blob | This Python pipeline |
+|---|---|---|
+| Where is the biggest blob? | yes (`tx`/`ty`) | yes (we still set `tx`/`ty`) |
+| How many balls are in a touching clump? | no -- it is one blob | yes (distance-transform peak counting) |
+| Which loose balls form a *pile*? | no | yes (spatial clustering) |
+| Which pile should we go for? | no | yes (ranked by count, then distance) |
+| How far away is it, in inches? | no | yes (calibrated pinhole model) |
+| Is this a clean ball or a reflection? | no | yes (confidence from solidity) |
+| Steady target across frames? | no | yes (temporal smoothing) |
+| Report several targets at once? | no (one blob) | yes (up to 4, structured `llpython`) |
+
+The cost is a little more CPU per frame and some code to maintain -- but you get
+vision *logic*, not just a color filter. And because we still point the built-in
+`tx`/`ty` crosshair at the best pile, simple aiming stays a one-line read on the
+robot; the rich data in `llpython` is there when you want to do more.
+
+HSV tuning still matters just as much here -- it is stage one of the pipeline.
+Python does not replace tuning the color; it adds everything that happens *after*
+the color is isolated.
+
 ## Quick start
 
 ### 1. Load the pipeline onto the Limelight
@@ -66,25 +97,27 @@ This exercises the clustering, ball-count estimation, ranking, and output
 encoding with synthetic layouts — no camera or OpenCV required. Great for
 verifying a change before you push it to the robot.
 
-## Tuning cheat-sheet
+## Tuning
 
 All tunables live in the `Config` class at the top of
-`ball_cluster_pipeline.py`:
+`ball_cluster_pipeline.py`. **[`docs/TUNING.md`](docs/TUNING.md) is the full
+guide** -- it explains every variable, the order to tune them in, and a
+symptom -> fix index. Start there. The table below is the quick reference.
 
-| Setting | What it controls |
-|---|---|
-| `HSV_LOWER` / `HSV_UPPER` | The target color. **Tune these first.** |
-| `DEBUG_VIEW` | Set to `"mask"` to see the color mask for HSV tuning (SnapScript has no built-in mask view); `"normal"` otherwise. |
-| `BALL_DIAMETER_IN` | Real ball size (for distance math). |
-| `CAMERA_FOCAL_PX` | Focal length in px for distance estimation; `0` = not calibrated (distance reported as unknown). See [`docs/DISTANCE.md`](docs/DISTANCE.md). |
-| `MIN_AREA_PX` / `MAX_AREA_PX` | Reject specks and giant background blobs. |
-| `MIN_CIRCULARITY` | How round a blob must be to count as ball(s). |
-| `EROSION_ITERATIONS` | Shrinks the mask to pull apart touching balls and remove noise; 0 disables. Keep light (1). |
-| `COUNT_METHOD` | `"peaks"` (distance-transform peak count, counts lines/piles correctly) or `"area"` (simpler area ratio). |
-| `FALLBACK_SINGLE_BALL_RADIUS_PX` | On-screen size of one ball, used by the `"area"` method / as a peak-count fallback. |
-| `CLUSTER_LINK_FACTOR` | How close balls must be to join one cluster. |
-| `SMOOTHING_ENABLED` / `SMOOTHING_ALPHA` | Steady clusters across frames; lower alpha = smoother, laggier. |
-| `MAX_CLUSTERS_REPORTED` | How many clusters to send to the robot (max 4). |
+Tune in pipeline order -- each stage feeds the next:
+
+| Stage | Settings | What it controls |
+|---|---|---|
+| **1. Color** (tune first) | `HSV_LOWER` / `HSV_UPPER`, `DEBUG_VIEW="mask"` | Isolate the ball as a clean white blob. See [`docs/HSV_TUNING.md`](docs/HSV_TUNING.md). |
+| **2. Mask cleanup** | `EROSION_ITERATIONS`, `EROSION_KERNEL_SIZE` | Shrink blobs to split touching balls and kill noise; 0 disables. |
+| **3. Blob filter** | `MIN_AREA_PX`/`MAX_AREA_PX`, `MIN_RADIUS_PX`/`MAX_RADIUS_PX`, `MIN_CIRCULARITY` | Keep only real balls; reject specks, walls, and jagged shapes. |
+| **4. Counting** | `COUNT_METHOD`, `PEAK_MIN_DISTANCE_FACTOR`, `PEAK_DT_THRESHOLD_FACTOR`, `COUNT_AREA_CLAMP_LOW`/`HIGH`, `MIN_BALL_RADIUS_FOR_PEAKS_PX` | How many balls a blob holds (`"peaks"` counts lines/piles correctly). |
+| (area fallback) | `ROUND_ENOUGH_FOR_REFERENCE`, `FALLBACK_SINGLE_BALL_RADIUS_PX` | One-ball size for the simpler area method. |
+| **5. Clustering** | `CLUSTER_LINK_FACTOR` | How close balls must be to join one pile. |
+| **6. Distance** | `BALL_DIAMETER_IN`, `CAMERA_FOCAL_PX` | Inch distance to each pile (one-time calibration; see [`docs/DISTANCE.md`](docs/DISTANCE.md)). |
+| **7. Smoothing** | `SMOOTHING_ENABLED`, `SMOOTHING_ALPHA`, `SMOOTHING_MATCH_FACTOR`, `SMOOTHING_MAX_MISSES` | Steady the target across frames (lower alpha = smoother, laggier). |
+| **8. Ranking** | `SCORE_USE_CONFIDENCE`, `SCORE_CONFIDENCE_FLOOR` | Break count ties toward clean, solid piles. |
+| **9. Output** | `MAX_CLUSTERS_REPORTED`, `DRAW_OVERLAYS`, `DEBUG_VIEW` | How many piles to send (max 4) and what the dashboard shows. |
 
 ## Adapting to a different ball / game
 
@@ -105,8 +138,9 @@ teamcode/vision/FieldLocalizer.java           # cluster -> field position (needs
 tools/field_localization.py           # validated reference for the localizer math
 tests/test_ball_clustering.py         # off-hardware unit tests
 tests/test_field_localization.py      # field-localization geometry tests
+docs/TUNING.md                        # full tuning guide: every Config variable
 docs/HSV_TUNING.md                    # color calibration walkthrough
 docs/DISTANCE.md                      # distance estimation + focal-length calibration
 docs/HOW_IT_WORKS.md                  # the vision algorithm, explained
-docs/BALL_COUNT_PLAN.md               # proposed: robust count for lines/piles
+docs/BALL_COUNT_PLAN.md               # design notes for the peak-based ball counting
 ```
