@@ -26,6 +26,24 @@ def _ball(cx, cy, r, est=1, circ=0.9, distance=0.0):
             "circularity": circ, "est": est, "distance": distance}
 
 
+def test_keep_largest_detections_caps_noise():
+    # 30 noise specks (area ~5) plus 2 real balls (big area) -> cap at 5 keeps
+    # the 2 balls and only the 3 biggest specks, never all 32.
+    noise = [{"cx": i, "cy": 0, "r": 1, "area": 5.0} for i in range(30)]
+    balls = [{"cx": 100, "cy": 100, "r": 20, "area": 1200.0},
+             {"cx": 300, "cy": 100, "r": 18, "area": 1000.0}]
+    kept = blp.keep_largest_detections(noise + balls, max_n=5)
+    assert len(kept) == 5
+    areas = sorted(d["area"] for d in kept)
+    assert 1000.0 in areas and 1200.0 in areas   # both balls survive
+
+
+def test_keep_largest_detections_no_cap_and_under_cap():
+    dets = [{"area": 10.0}, {"area": 20.0}]
+    assert blp.keep_largest_detections(dets, max_n=0) == dets      # 0 = keep all
+    assert blp.keep_largest_detections(dets, max_n=5) == dets      # under cap
+
+
 def test_circularity_perfect_circle_is_one():
     import math
     r = 10.0

@@ -84,6 +84,18 @@ class Config:
     MIN_CIRCULARITY = 0.55     # 1.0 = perfect circle. A single ball is round;
     #                            merged balls / occluded balls are less round,
     #                            so keep this fairly forgiving.
+    # Robustness cap: keep only the N largest blobs (by area) before clustering.
+    # A noisy surface (carpet, a tablecloth) can leak hundreds of specks through
+    # the mask; this guarantees the pipeline can never build more than a handful
+    # of clusters out of that noise. Real balls are among the largest blobs, so
+    # this drops junk, not balls. Set to 0 for no cap.
+    MAX_DETECTIONS = 24
+
+    # ---- Mask cleanup / denoise ----------------------------------------------
+    # Kernel size (px, odd) for the morphological OPEN that removes speckle.
+    # On a textured surface that leaks fine noise, raise this to 7 or 9 to wipe
+    # more of it before anything else runs.
+    MORPH_OPEN_KERNEL_SIZE = 5
 
     # ---- Mask erosion --------------------------------------------------------
     # Shrinks the color mask after the open/close cleanup. Helps pull apart
@@ -250,6 +262,18 @@ def reference_single_ball_area(detections, fallback_radius):
         clean.sort()
         return float(clean[len(clean) // 2])          # median
     return float(math.pi * fallback_radius * fallback_radius)
+
+
+def keep_largest_detections(detections, max_n):
+    """Keep only the `max_n` largest detections by area (0 = keep all).
+
+    Robustness guard: a noisy surface can leak many blobs through the mask.
+    Real balls are among the biggest, so capping to the largest few drops the
+    noise before it can become phantom clusters. Pure, so it is unit-testable.
+    """
+    if max_n <= 0 or len(detections) <= max_n:
+        return detections
+    return sorted(detections, key=lambda d: d["area"], reverse=True)[:max_n]
 
 
 def _median(values):
@@ -572,10 +596,13 @@ def threshold_color(image):
     # threshold two ranges and OR them:
     #   mask = cv2.inRange(hsv, low1, high1) | cv2.inRange(hsv, low2, high2)
 
-    # Clean up salt-and-pepper noise and close small gaps inside a ball.
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    # Clean up salt-and-pepper noise and close small gaps inside a ball. The
+    # OPEN kernel is tunable (raise it to wipe more noise on textured surfaces).
+    k = Config.MORPH_OPEN_KERNEL_SIZE
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
 
     # Optional erosion: shrink the blobs. This pinches apart balls that only
     # touch at a thin bridge (so they become separate contours) and eats any
@@ -715,6 +742,9 @@ def runPipeline(image, llrobot):
 
     mask = threshold_color(image)
     detections = detect_blobs(mask)
+    # Robustness: on a noisy surface the mask can leak many blobs -- keep only
+    # the largest few so junk can never become phantom clusters.
+    detections = keep_largest_detections(detections, Config.MAX_DETECTIONS)
 
     # Count balls per blob. Preferred method is distance-transform peak counting
     # (one peak per same-size ball), which counts a line/pile correctly instead

@@ -100,6 +100,28 @@ values assume a 640x480 stream -- scale them if you change resolution.
 | Reflections read as balls | raise `MIN_CIRCULARITY` a little |
 | A real pile gets rejected | lower `MIN_CIRCULARITY` |
 
+### Robustness on a noisy / textured surface (carpet, a tablecloth)
+
+A busy surface can leak hundreds of specks through the mask. Two guards keep
+that from becoming phantom balls, on top of tightening HSV Saturation (the real
+fix -- see `docs/HSV_TUNING.md`):
+
+```
+MORPH_OPEN_KERNEL_SIZE = 5   # raise to 7 or 9 to wipe more fine noise up front
+MAX_DETECTIONS = 24          # keep only the N largest blobs; 0 = no cap
+```
+
+- **MORPH_OPEN_KERNEL_SIZE** -- the denoise (morphological open) kernel. A bigger
+  kernel erases more fine speckle before anything else runs. Raise it on a
+  textured surface; if it starts eating small/far balls, back it down.
+- **MAX_DETECTIONS** -- a hard ceiling: after filtering, only the largest few
+  blobs are kept. Real balls are among the biggest, so a noise storm can never
+  spawn more than a handful of clusters no matter how bad the mask is. Lower it
+  (e.g. 12) for a tighter guarantee; 0 removes the cap.
+
+Recipe for a bad surface: raise HSV `S` first, then `MORPH_OPEN_KERNEL_SIZE` to
+7-9, then rely on `MIN_AREA_PX` and `MAX_DETECTIONS` to reject whatever is left.
+
 ---
 
 ## 4. Ball counting
